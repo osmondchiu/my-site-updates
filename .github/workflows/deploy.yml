@@ -93,21 +93,49 @@ jobs:
           value: ${{ github.repository }}
       - name: Install and Build 🔧
         run: |
-          sudo apt-get update && sudo apt-get install -y imagemagick build-essential libssl-dev zlib1g-dev libxml2-dev libxslt1-dev
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y imagemagick build-essential libssl-dev zlib1g-dev libxml2-dev libxslt1-dev
+
           pip3 install --upgrade nbconvert
 
-          # Install Bundler 2.x compatible with lockfile (adjust version if needed)
-          gem install bundler -v "2.4.13" || gem install bundler
-          bundle _2.4.13_ --version || true
+          # Determine Bundler version from Gemfile.lock if present
+          BUNDLER_VERSION=""
+          if [ -f Gemfile.lock ]; then
+            BUNDLER_VERSION=$(awk '/^BUNDLED WITH/{getline; print $1; exit}' Gemfile.lock || true)
+          fi
+          BUNDLER_VERSION=${BUNDLER_VERSION:-"2.4.13"}
+          echo "Using bundler version: $BUNDLER_VERSION"
 
-          # Ensure linux platform is present in lockfile so CI can resolve native gems
-          bundle lock --add-platform x86_64-linux
+          # Update RubyGems and install the matching bundler
+          gem update --system --no-document || true
+          gem install bundler -v "$BUNDLER_VERSION" --no-document || gem install bundler --no-document
 
-          # Install gems into vendor/bundle to avoid system dir and improve caching
-          bundle _2.4.13_ install --jobs 4 --retry 3 --path vendor/bundle --verbose
+          # Verify bundler
+          bundle _${BUNDLER_VERSION}_ --version || true
+
+          # Ensure linux platform exists in the lockfile so native gems can be resolved
+          bundle lock --add-platform x86_64-linux || true
+
+          # Configure bundler to install into vendor/bundle and skip dev/test groups
+          bundle config set --local path 'vendor/bundle'
+          bundle config set --local without 'development test'
+
+          # Install gems (verbose for diagnostic)
+          if ! bundle _${BUNDLER_VERSION}_ install --jobs 4 --retry 3 --path vendor/bundle --verbose; then
+            echo "=== BUNDLE INSTALL FAILED: printing diagnostics ==="
+            echo "=== Gemfile.lock (tail): ==="
+            tail -n 200 Gemfile.lock || true
+            echo "=== bundle env ==="
+            bundle env || true
+            echo "=== gem list (first 200 lines) ==="
+            gem list | head -n 200 || true
+            exit 1
+          fi
 
           export JEKYLL_ENV=production
-          bundle _2.4.13_ exec jekyll build
+          bundle _${BUNDLER_VERSION}_ exec jekyll build
       - name: Purge unused CSS 🧹
         run: |
           npm install -g purgecss
